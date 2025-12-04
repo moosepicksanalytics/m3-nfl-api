@@ -1,29 +1,20 @@
 """
-FastAPI server for NFL M3 Predictions API.
-Endpoints for predictions and training.
+FastAPI server for NFL prediction model
 """
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
-import logging
-
+from typing import List, Optional, Dict, Any
+import numpy as np
 from model import NFLPredictionModel
-from features import NFLTeamFeatures
+from features import NFLTeamFeatures, prepare_features_for_model, moneyline_to_implied_prob
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Initialize app
 app = FastAPI(
-    title="M3 NFL Predictions API",
-    description="Machine learning predictions for NFL games",
-    version="1.0.0"
+    title="M3 NFL Prediction API",
+    description="Enhanced NFL game prediction model with betting line features",
+    version="2.0.0"
 )
 
-# CORS for Supabase edge functions
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,206 +23,163 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global model instance
+# Load model on startup
 model = NFLPredictionModel()
-
-# Try to load existing model
 model.load("model")
 
-
-# === Request/Response Models ===
-
-class TeamFeaturesRequest(BaseModel):
+class TeamInput(BaseModel):
+    """Input for a single team's features"""
     team: str
-    team_full_name: str
-    wins: int
-    losses: int
+    wins: int = 0
+    losses: int = 0
     ties: int = 0
-    games_played: int
-    points_for: int
-    points_against: int
-    point_diff: int
+    points_for: float = 0
+    points_against: float = 0
     home_wins: int = 0
     home_losses: int = 0
     away_wins: int = 0
     away_losses: int = 0
-    streak_type: Optional[str] = None
-    streak_length: int = 0
-    last_5_wins: int = 2
-    last_5_losses: int = 2
-    division_rank: int = 4
-    conference_rank: int = 16
-    qb_injured: bool = False
-    key_injuries_count: int = 0
-    yards_per_game: float = 0.0
-    yards_allowed_per_game: float = 0.0
-    turnover_diff: int = 0
-    third_down_pct: float = 0.0
-    red_zone_pct: float = 0.0
-
+    last_5_wins: int = 0
+    last_5_losses: int = 0
+    streak: int = 0
+    days_rest: int = 7
+    is_divisional: bool = False
+    is_primetime: bool = False
+    # Betting lines
+    spread_line: float = 0
+    total_line: float = 44.5
+    moneyline: int = 0
+    opponent_win_pct: float = 0.5
+    turnover_diff: float = 0
 
 class PredictionRequest(BaseModel):
-    home_team: TeamFeaturesRequest
-    away_team: TeamFeaturesRequest
-    spread_line: float = 0
-    total_line: float = 45
-
+    """Request for game prediction"""
+    home_team: TeamInput
+    away_team: TeamInput
 
 class BatchPredictionRequest(BaseModel):
+    """Request for multiple game predictions"""
     games: List[PredictionRequest]
 
-
-class TrainingDataItem(BaseModel):
-    home_features: dict
-    away_features: dict
-    home_won: bool
-    home_covered: bool = False
-    total_points: int = 45
-    spread_line: float = 0
-    total_line: float = 45
-
-
-class TrainRequest(BaseModel):
-    training_data: List[TrainingDataItem]
-
-
-# === Endpoints ===
-
 @app.get("/")
-def root():
+async def root():
     """Health check endpoint"""
     return {
-        "service": "M3 NFL Predictions API",
         "status": "healthy",
+        "model": "M3 NFL Prediction API v2.0",
         "model_trained": model.is_trained,
-        "version": model.model_version
+        "training_accuracy": model.training_accuracy,
+        "cv_accuracy": model.cv_accuracy,
     }
 
-
 @app.get("/health")
-def health():
-    """Health check for Railway"""
-    return {"status": "ok"}
-
+async def health():
+    return {"status": "ok", "model_loaded": model.is_trained}
 
 @app.post("/predict")
-def predict(request: PredictionRequest):
-    """
-    Get prediction for a single NFL game.
-    """
+async def predict(request: PredictionRequest) -> Dict[str, Any]:
+    """Make prediction for a single game"""
     try:
-        home = NFLTeamFeatures(
-            team=request.home_team.team,
-            team_full_name=request.home_team.team_full_name,
+        # Build feature objects
+        home_features = NFLTeamFeatures(
             wins=request.home_team.wins,
             losses=request.home_team.losses,
             ties=request.home_team.ties,
-            games_played=request.home_team.games_played,
             points_for=request.home_team.points_for,
             points_against=request.home_team.points_against,
-            point_diff=request.home_team.point_diff,
+            point_differential=request.home_team.points_for - request.home_team.points_against,
             home_wins=request.home_team.home_wins,
             home_losses=request.home_team.home_losses,
             away_wins=request.home_team.away_wins,
             away_losses=request.home_team.away_losses,
-            streak_type=request.home_team.streak_type,
-            streak_length=request.home_team.streak_length,
             last_5_wins=request.home_team.last_5_wins,
             last_5_losses=request.home_team.last_5_losses,
-            division_rank=request.home_team.division_rank,
-            conference_rank=request.home_team.conference_rank,
-            qb_injured=request.home_team.qb_injured,
-            key_injuries_count=request.home_team.key_injuries_count,
-            yards_per_game=request.home_team.yards_per_game,
-            yards_allowed_per_game=request.home_team.yards_allowed_per_game,
+            streak=request.home_team.streak,
+            days_rest=request.home_team.days_rest,
+            is_divisional=request.home_team.is_divisional,
+            is_primetime=request.home_team.is_primetime,
+            spread_line=request.home_team.spread_line,
+            total_line=request.home_team.total_line,
+            moneyline=request.home_team.moneyline,
+            implied_prob=moneyline_to_implied_prob(request.home_team.moneyline),
+            opponent_win_pct=request.home_team.opponent_win_pct,
             turnover_diff=request.home_team.turnover_diff,
         )
         
-        away = NFLTeamFeatures(
-            team=request.away_team.team,
-            team_full_name=request.away_team.team_full_name,
+        away_features = NFLTeamFeatures(
             wins=request.away_team.wins,
             losses=request.away_team.losses,
             ties=request.away_team.ties,
-            games_played=request.away_team.games_played,
             points_for=request.away_team.points_for,
             points_against=request.away_team.points_against,
-            point_diff=request.away_team.point_diff,
+            point_differential=request.away_team.points_for - request.away_team.points_against,
             home_wins=request.away_team.home_wins,
             home_losses=request.away_team.home_losses,
             away_wins=request.away_team.away_wins,
             away_losses=request.away_team.away_losses,
-            streak_type=request.away_team.streak_type,
-            streak_length=request.away_team.streak_length,
             last_5_wins=request.away_team.last_5_wins,
             last_5_losses=request.away_team.last_5_losses,
-            division_rank=request.away_team.division_rank,
-            conference_rank=request.away_team.conference_rank,
-            qb_injured=request.away_team.qb_injured,
-            key_injuries_count=request.away_team.key_injuries_count,
-            yards_per_game=request.away_team.yards_per_game,
-            yards_allowed_per_game=request.away_team.yards_allowed_per_game,
+            streak=request.away_team.streak,
+            days_rest=request.away_team.days_rest,
+            is_divisional=request.away_team.is_divisional,
+            is_primetime=request.away_team.is_primetime,
+            spread_line=-request.home_team.spread_line,  # Flip spread for away
+            total_line=request.home_team.total_line,
+            moneyline=request.away_team.moneyline,
+            implied_prob=moneyline_to_implied_prob(request.away_team.moneyline),
+            opponent_win_pct=request.away_team.opponent_win_pct,
             turnover_diff=request.away_team.turnover_diff,
         )
         
-        prediction = model.predict(
-            home, away,
-            request.spread_line,
-            request.total_line
-        )
+        # Prepare features and predict
+        features = prepare_features_for_model(home_features, away_features)
+        prediction = model.predict(np.array(features))
         
-        return prediction
+        return {
+            "home_team": request.home_team.team,
+            "away_team": request.away_team.team,
+            **prediction
+        }
         
     except Exception as e:
-        logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.post("/predict/batch")
-def predict_batch(request: BatchPredictionRequest):
-    """
-    Get predictions for multiple NFL games.
-    """
-    predictions = []
+async def predict_batch(request: BatchPredictionRequest) -> List[Dict[str, Any]]:
+    """Make predictions for multiple games"""
+    results = []
     for game in request.games:
-        try:
-            result = predict(game)
-            predictions.append(result)
-        except Exception as e:
-            predictions.append({"error": str(e)})
-    
-    return {"predictions": predictions}
-
+        result = await predict(game)
+        results.append(result)
+    return results
 
 @app.post("/train")
-def train(request: TrainRequest):
-    """
-    Train the model with historical data.
-    """
+async def train_model():
+    """Trigger model retraining"""
     try:
-        training_data = [item.model_dump() for item in request.training_data]
-        result = model.train(training_data)
+        from scraper import build_training_dataset
         
-        if result["success"]:
-            model.save("model")
+        X, y_win, y_spread, y_total = build_training_dataset(
+            seasons=[2018, 2019, 2020, 2021, 2022, 2023]
+        )
         
-        return result
+        if len(X) == 0:
+            raise HTTPException(status_code=500, detail="No training data available")
+        
+        results = model.train(X, y_win, y_spread=y_spread, y_total=y_total)
+        model.save("model")
+        
+        return {
+            "status": "success",
+            "samples": len(X),
+            "training_accuracy": results.get('training_accuracy'),
+            "cv_accuracy": results.get('cv_accuracy'),
+        }
         
     except Exception as e:
-        logger.error(f"Training error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/model/info")
-def model_info():
-    """Get information about the current model"""
-    return {
-        "is_trained": model.is_trained,
-        "version": model.model_version,
-        "model_type": "GradientBoosting" if model.is_trained else "Heuristic"
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+async def model_info():
+    """Get model information"""
+    return model.get_model_info()

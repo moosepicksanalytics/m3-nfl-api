@@ -1,281 +1,292 @@
 """
-NFL-specific feature engineering for M3 predictions.
-Football features differ significantly from hockey.
+Enhanced NFL Feature Engineering with Betting Lines
 """
-
 from dataclasses import dataclass
 from typing import Optional
-import math
+import numpy as np
 
 @dataclass
 class NFLTeamFeatures:
-    """NFL team features for prediction model"""
-    team: str
-    team_full_name: str
-    
-    # Record
-    wins: int
-    losses: int
-    ties: int
-    games_played: int
+    """Enhanced NFL team features including betting lines"""
+    # Basic record
+    wins: int = 0
+    losses: int = 0
+    ties: int = 0
     
     # Scoring
-    points_for: int
-    points_against: int
-    point_diff: int
+    points_for: float = 0.0
+    points_against: float = 0.0
     
-    # Home/Away splits
-    home_wins: int
-    home_losses: int
-    away_wins: int
-    away_losses: int
-    
-    # Recent form
-    streak_type: Optional[str]  # 'W' or 'L'
-    streak_length: int
-    last_5_wins: int
-    last_5_losses: int
-    
-    # Division/Conference
-    division_rank: int
-    conference_rank: int
-    
-    # Injury impact
-    qb_injured: bool  # Starting QB out
-    key_injuries_count: int  # Starters on IR
-    
-    # Advanced (optional)
+    # Advanced metrics
+    point_differential: float = 0.0
     yards_per_game: float = 0.0
     yards_allowed_per_game: float = 0.0
-    turnover_diff: int = 0
-    third_down_pct: float = 0.0
-    red_zone_pct: float = 0.0
+    turnover_diff: float = 0.0
     
-    @property
-    def win_pct(self) -> float:
-        if self.games_played == 0:
-            return 0.5
-        return self.wins / self.games_played
+    # Situational
+    home_wins: int = 0
+    home_losses: int = 0
+    away_wins: int = 0
+    away_losses: int = 0
     
-    @property
-    def avg_points_for(self) -> float:
-        if self.games_played == 0:
-            return 21.0  # NFL average
-        return self.points_for / self.games_played
+    # Recent form
+    last_5_wins: int = 0
+    last_5_losses: int = 0
+    streak: int = 0  # Positive = win streak, negative = loss streak
     
-    @property
-    def avg_points_against(self) -> float:
-        if self.games_played == 0:
-            return 21.0
-        return self.points_against / self.games_played
+    # Rest and scheduling
+    days_rest: int = 7
+    is_divisional: bool = False
+    is_primetime: bool = False
     
-    @property
-    def home_win_pct(self) -> float:
-        home_games = self.home_wins + self.home_losses
-        if home_games == 0:
-            return 0.5
-        return self.home_wins / home_games
+    # Betting lines (market consensus)
+    spread_line: float = 0.0
+    total_line: float = 0.0
+    moneyline: int = 0
+    implied_prob: float = 0.5
     
-    @property
-    def away_win_pct(self) -> float:
-        away_games = self.away_wins + self.away_losses
-        if away_games == 0:
-            return 0.5
-        return self.away_wins / away_games
-    
-    @property
-    def recent_form_score(self) -> float:
-        """Score from 0-1 based on last 5 games"""
-        return self.last_5_wins / 5.0
-    
-    def to_feature_dict(self) -> dict:
-        """Convert to dictionary for model input"""
-        return {
-            "team": self.team,
-            "wins": self.wins,
-            "losses": self.losses,
-            "games_played": self.games_played,
-            "win_pct": self.win_pct,
-            "points_for": self.points_for,
-            "points_against": self.points_against,
-            "point_diff": self.point_diff,
-            "avg_points_for": self.avg_points_for,
-            "avg_points_against": self.avg_points_against,
-            "home_wins": self.home_wins,
-            "home_losses": self.home_losses,
-            "away_wins": self.away_wins,
-            "away_losses": self.away_losses,
-            "home_win_pct": self.home_win_pct,
-            "away_win_pct": self.away_win_pct,
-            "streak_type": self.streak_type,
-            "streak_length": self.streak_length,
-            "last_5_wins": self.last_5_wins,
-            "recent_form": self.recent_form_score,
-            "division_rank": self.division_rank,
-            "conference_rank": self.conference_rank,
-            "qb_injured": self.qb_injured,
-            "key_injuries_count": self.key_injuries_count,
-            "yards_per_game": self.yards_per_game,
-            "yards_allowed_per_game": self.yards_allowed_per_game,
-            "turnover_diff": self.turnover_diff,
-        }
+    # Opponent strength
+    opponent_win_pct: float = 0.5
+    strength_of_schedule: float = 0.5
 
-
-# NFL-specific feature weights (tuned for football)
+# Updated feature weights with betting line importance
 NFL_FEATURE_WEIGHTS = {
-    "win_pct": 0.22,           # Overall record matters
-    "point_diff": 0.18,        # Point differential is key
-    "recent_form": 0.15,       # Last 5 games momentum
-    "home_advantage": 0.12,    # Home field ~3 points in NFL
-    "qb_health": 0.15,         # QB is most important position
-    "turnover_diff": 0.10,     # Turnovers swing games
-    "yards_diff": 0.08,        # Offensive/defensive efficiency
+    # Betting lines are MOST predictive (market wisdom)
+    'spread_line': 0.20,          # Vegas spread is highly predictive
+    'implied_prob': 0.12,         # Moneyline implied probability
+    'total_line': 0.05,           # Over/under context
+    
+    # Team performance
+    'win_percentage': 0.12,
+    'point_differential': 0.10,
+    'recent_form': 0.10,          # Last 5 games
+    
+    # Situational factors
+    'home_advantage': 0.08,
+    'days_rest': 0.06,
+    'opponent_strength': 0.07,
+    
+    # Advanced metrics
+    'turnover_diff': 0.05,
+    'yards_diff': 0.03,
+    'divisional_game': 0.02,
 }
 
+def moneyline_to_implied_prob(ml: int) -> float:
+    """Convert American moneyline to implied probability"""
+    if ml is None or np.isnan(ml):
+        return 0.5
+    if ml > 0:
+        return 100 / (ml + 100)
+    else:
+        return abs(ml) / (abs(ml) + 100)
 
-def calculate_team_strength(features: NFLTeamFeatures, is_home: bool) -> float:
-    """
-    Calculate overall team strength score (0-100).
-    Higher = stronger team.
-    """
-    score = 50.0  # Base score
+def calculate_team_strength(features: NFLTeamFeatures) -> float:
+    """Calculate overall team strength score (0-100)"""
+    games_played = features.wins + features.losses + features.ties
+    if games_played == 0:
+        return 50.0
     
-    # Win percentage impact (0.22 weight, max ±15 points)
-    win_pct_impact = (features.win_pct - 0.5) * 30 * NFL_FEATURE_WEIGHTS["win_pct"] / 0.22
-    score += win_pct_impact
+    # Win percentage (0-30 points)
+    win_pct = features.wins / games_played
+    win_score = win_pct * 30
     
-    # Point differential impact (0.18 weight, max ±12 points)
-    # NFL point diff of +100 over 17 games = +5.9 per game = elite
-    ppg_diff = features.point_diff / max(features.games_played, 1)
-    point_diff_impact = (ppg_diff / 10) * 24 * NFL_FEATURE_WEIGHTS["point_diff"] / 0.18
-    score += max(min(point_diff_impact, 12), -12)
+    # Point differential per game (0-25 points)
+    ppg_diff = features.point_differential / games_played
+    # Normalize: +15 ppg diff = max score, -15 = min score
+    pd_score = max(0, min(25, (ppg_diff + 15) / 30 * 25))
     
-    # Recent form impact (0.15 weight, max ±8 points)
-    form_impact = (features.recent_form_score - 0.5) * 16 * NFL_FEATURE_WEIGHTS["recent_form"] / 0.15
-    score += form_impact
+    # Recent form - last 5 games (0-20 points)
+    recent_games = features.last_5_wins + features.last_5_losses
+    if recent_games > 0:
+        recent_win_pct = features.last_5_wins / recent_games
+        form_score = recent_win_pct * 20
+    else:
+        form_score = 10
     
-    # Home advantage (0.12 weight, +3 points)
-    if is_home:
-        score += 3.0 * NFL_FEATURE_WEIGHTS["home_advantage"] / 0.12
+    # Streak bonus/penalty (0-10 points, centered at 5)
+    streak_score = 5 + min(5, max(-5, features.streak))
     
-    # QB injury impact (0.15 weight, -10 points if starting QB out)
-    if features.qb_injured:
-        score -= 10.0 * NFL_FEATURE_WEIGHTS["qb_health"] / 0.15
+    # Turnover differential (0-10 points)
+    to_score = max(0, min(10, (features.turnover_diff + 10) / 20 * 10))
     
-    # Key injuries impact (max -5 for 5+ starters out)
-    injury_penalty = min(features.key_injuries_count, 5) * 1.0
-    score -= injury_penalty
+    # Home/away performance (0-5 points)
+    if features.home_wins + features.home_losses > 0:
+        home_pct = features.home_wins / (features.home_wins + features.home_losses)
+    else:
+        home_pct = 0.5
+    home_score = home_pct * 5
     
-    # Turnover differential impact (0.10 weight, max ±5 points)
-    to_impact = (features.turnover_diff / 10) * 10 * NFL_FEATURE_WEIGHTS["turnover_diff"] / 0.10
-    score += max(min(to_impact, 5), -5)
-    
-    # Clamp to valid range
-    return max(20.0, min(80.0, score))
-
+    total = win_score + pd_score + form_score + streak_score + to_score + home_score
+    return min(100, max(0, total))
 
 def calculate_win_probability(
-    home_strength: float,
-    away_strength: float,
     home_features: NFLTeamFeatures,
-    away_features: NFLTeamFeatures
-) -> tuple[float, float]:
+    away_features: NFLTeamFeatures,
+    use_betting_lines: bool = True
+) -> float:
     """
-    Calculate win probability for home and away teams.
-    Returns (home_win_prob, away_win_prob).
+    Calculate home team win probability using team features and betting lines.
+    Betting lines are heavily weighted when available.
     """
-    # Base probability from strength differential
+    # Start with team strength comparison
+    home_strength = calculate_team_strength(home_features)
+    away_strength = calculate_team_strength(away_features)
+    
+    # Strength-based probability
     strength_diff = home_strength - away_strength
+    strength_prob = 0.5 + (strength_diff / 100) * 0.35  # Max swing of 35%
     
-    # Convert to probability using logistic function
-    # 10 point diff = ~65% win probability
-    k = 0.08  # Steepness factor
-    home_prob = 1 / (1 + math.exp(-k * strength_diff))
+    # Home field advantage (+3% base)
+    home_advantage = 0.03
     
-    # Adjust for specific matchup factors
+    # Rest advantage
+    rest_diff = home_features.days_rest - away_features.days_rest
+    rest_advantage = rest_diff * 0.005  # 0.5% per day of rest advantage
     
-    # Divisional games are more unpredictable
-    # (would need division data to implement)
+    # Recent form adjustment
+    home_form = home_features.last_5_wins - home_features.last_5_losses
+    away_form = away_features.last_5_wins - away_features.last_5_losses
+    form_diff = home_form - away_form
+    form_adjustment = form_diff * 0.015  # 1.5% per win differential
     
-    # Weather/outdoor factor (would need weather data)
+    # Calculate base probability
+    base_prob = strength_prob + home_advantage + rest_advantage + form_adjustment
     
-    # Ensure probabilities are reasonable
-    home_prob = max(0.20, min(0.80, home_prob))
-    away_prob = 1 - home_prob
+    # If betting lines available, weight them heavily (60% betting, 40% model)
+    if use_betting_lines and home_features.implied_prob > 0:
+        betting_prob = home_features.implied_prob
+        # Blend: 60% betting line, 40% model
+        final_prob = (betting_prob * 0.6) + (base_prob * 0.4)
+    else:
+        final_prob = base_prob
     
-    return home_prob, away_prob
+    # Clamp to reasonable range
+    return max(0.15, min(0.85, final_prob))
 
+def calculate_spread_probability(
+    home_features: NFLTeamFeatures,
+    away_features: NFLTeamFeatures,
+    spread: float
+) -> float:
+    """Calculate probability of home team covering the spread"""
+    # Get base win probability
+    win_prob = calculate_win_probability(home_features, away_features)
+    
+    # Adjust for spread
+    # Each point of spread shifts probability by ~3%
+    spread_adjustment = spread * 0.03
+    
+    cover_prob = win_prob + spread_adjustment
+    
+    return max(0.20, min(0.80, cover_prob))
 
 def calculate_predicted_total(
     home_features: NFLTeamFeatures,
     away_features: NFLTeamFeatures
 ) -> float:
-    """
-    Predict total points for the game.
-    NFL average is ~43-46 points per game.
-    """
-    # Base: average of both teams' scoring
-    home_ppg = home_features.avg_points_for
-    away_ppg = away_features.avg_points_for
-    home_papg = home_features.avg_points_against
-    away_papg = away_features.avg_points_against
+    """Predict total points scored in game"""
+    games_home = home_features.wins + home_features.losses + home_features.ties
+    games_away = away_features.wins + away_features.losses + away_features.ties
     
-    # Matchup-based projection
+    if games_home == 0 or games_away == 0:
+        # Use betting line if available, else league average
+        if home_features.total_line > 0:
+            return home_features.total_line
+        return 44.5  # NFL average
+    
+    # Calculate expected scoring
+    home_ppg = home_features.points_for / games_home
+    home_papg = home_features.points_against / games_home
+    away_ppg = away_features.points_for / games_away
+    away_papg = away_features.points_against / games_away
+    
+    # Expected points: (Team's offense + Opponent's defense) / 2
     home_expected = (home_ppg + away_papg) / 2
     away_expected = (away_ppg + home_papg) / 2
-    base_total = home_expected + away_expected
     
-    # Adjustments
-    adjustments = 0.0
+    predicted_total = home_expected + away_expected
     
-    # Hot offenses add points
-    if home_features.recent_form_score >= 0.8:
-        adjustments += 1.5
-    if away_features.recent_form_score >= 0.8:
-        adjustments += 1.5
+    # Blend with betting total if available (50/50)
+    if home_features.total_line > 0:
+        predicted_total = (predicted_total * 0.5) + (home_features.total_line * 0.5)
     
-    # Cold offenses subtract
-    if home_features.recent_form_score <= 0.2:
-        adjustments -= 1.5
-    if away_features.recent_form_score <= 0.2:
-        adjustments -= 1.5
-    
-    # QB injuries = fewer points for that team
-    if home_features.qb_injured:
-        adjustments -= 3.0
-    if away_features.qb_injured:
-        adjustments -= 3.0
-    
-    return base_total + adjustments
+    return predicted_total
 
-
-def calculate_spread_probability(
-    home_strength: float,
-    away_strength: float,
-    spread_line: float,
+def prepare_features_for_model(
     home_features: NFLTeamFeatures,
     away_features: NFLTeamFeatures
-) -> float:
+) -> list:
     """
-    Calculate probability of home team covering the spread.
-    spread_line is from home team perspective (negative = favorite).
+    Prepare feature vector for ML model input.
+    Returns list of numeric features in consistent order.
     """
-    # Expected margin = strength difference
-    # In NFL, 1 point of strength ≈ 0.3 expected margin points
-    expected_margin = (home_strength - away_strength) * 0.3
+    home_games = home_features.wins + home_features.losses + home_features.ties
+    away_games = away_features.wins + away_features.losses + away_features.ties
     
-    # Home team covers if actual margin > spread_line
-    # spread_line of -7 means home must win by >7
-    # spread_line of +3 means home can lose by <3
+    features = [
+        # Betting lines (most important)
+        home_features.spread_line,
+        home_features.total_line,
+        home_features.implied_prob,
+        
+        # Win percentages
+        home_features.wins / max(1, home_games),
+        away_features.wins / max(1, away_games),
+        
+        # Point differentials per game
+        home_features.point_differential / max(1, home_games),
+        away_features.point_differential / max(1, away_games),
+        
+        # Points per game
+        home_features.points_for / max(1, home_games),
+        away_features.points_for / max(1, away_games),
+        home_features.points_against / max(1, home_games),
+        away_features.points_against / max(1, away_games),
+        
+        # Recent form
+        home_features.last_5_wins,
+        home_features.last_5_losses,
+        away_features.last_5_wins,
+        away_features.last_5_losses,
+        
+        # Streaks
+        home_features.streak,
+        away_features.streak,
+        
+        # Rest
+        home_features.days_rest,
+        away_features.days_rest,
+        
+        # Turnover diff
+        home_features.turnover_diff,
+        away_features.turnover_diff,
+        
+        # Home/away splits
+        home_features.home_wins / max(1, home_features.home_wins + home_features.home_losses),
+        away_features.away_wins / max(1, away_features.away_wins + away_features.away_losses),
+        
+        # Opponent strength
+        home_features.opponent_win_pct,
+        away_features.opponent_win_pct,
+        
+        # Situational
+        1.0 if home_features.is_divisional else 0.0,
+        1.0 if home_features.is_primetime else 0.0,
+    ]
     
-    # Standard deviation of NFL games is about 13-14 points
-    std_dev = 13.5
-    
-    # Z-score: how many SDs is spread from expected margin
-    z = (expected_margin - spread_line) / std_dev
-    
-    # Convert to probability using normal CDF approximation
-    # (simplified logistic approximation)
-    cover_prob = 1 / (1 + math.exp(-0.6 * z))
-    
-    return max(0.25, min(0.75, cover_prob))
+    return features
+
+FEATURE_NAMES = [
+    'spread_line', 'total_line', 'implied_prob',
+    'home_win_pct', 'away_win_pct',
+    'home_point_diff_pg', 'away_point_diff_pg',
+    'home_ppg', 'away_ppg', 'home_papg', 'away_papg',
+    'home_last5_wins', 'home_last5_losses', 'away_last5_wins', 'away_last5_losses',
+    'home_streak', 'away_streak',
+    'home_rest', 'away_rest',
+    'home_to_diff', 'away_to_diff',
+    'home_home_win_pct', 'away_away_win_pct',
+    'home_opp_strength', 'away_opp_strength',
+    'is_divisional', 'is_primetime',
+]
